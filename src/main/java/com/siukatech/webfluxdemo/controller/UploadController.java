@@ -1,31 +1,26 @@
 package com.siukatech.webfluxdemo.controller;
 
+import com.siukatech.webfluxdemo.model.*;
 import com.siukatech.webfluxdemo.service.AwsS3Service;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.NestedExceptionUtils;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -246,17 +241,17 @@ public class UploadController {
                 .collectList()
                 // from Mono<List<FileInfo>> to Mono<UploadResp)
                 .map(fileInfos -> {
-                    return new UploadResp(fileInfos.stream()
+                    List<FileDto> fileDtos = fileInfos.stream()
                             .map(fileInfo -> new FileDto(fileInfo.getFilename(), fileInfo.getContent().length, ""))
-                            .collect(Collectors.toList())
-                    );
+                            .collect(Collectors.toList());
+                    return UploadResp.builder().uploadedFiles(fileDtos).build();
                 })
                 .log()
                 .doOnNext(uploadResp -> {
                     log.debug("uploadPostTest1e3c - dirPath: [" + dirPath
                             + "], filenamePrefix: [" + namePrefix
                             + "]");
-                    uploadResp.uploadedFileList.forEach(fileDto ->
+                    uploadResp.getUploadedFiles().forEach(fileDto ->
                             log.debug("uploadPostTest1e3c - fileDto.getFilename: [" + fileDto.getFilename()
                                     + "], fileDto.getContentLen: [" + fileDto.getContentLen()
                                     + "]"));
@@ -299,21 +294,26 @@ public class UploadController {
                 })
                 .log()
                 .map(fileInfo -> {
-                    String uuid = awsS3Service.putObject(fileInfo.getFilename(), fileInfo.getContent());
+                    String uuid = null;
+                    // Runtime Exception is required
+                    uuid = awsS3Service.putObject(fileInfo.getFilename(), fileInfo.getContent());
                     FileDto fileDto = new FileDto(fileInfo.getFilename(), fileInfo.getContent().length, uuid);
                     return fileDto;
                 })
+//                .onErrorResume((e, fallback) -> {
+//                    throw e;
+//                })
                 // from Flux to Mono
                 .collectList()
                 // from Mono<List<FileInfo>> to Mono<UploadResp)
-                .map(fileDtos -> new UploadResp(fileDtos))
+                .map(fileDtos -> UploadResp.builder().uploadedFiles(fileDtos).build())
                 .log()
                 .doOnNext(uploadResp -> {
-                    log.debug("uploadPostTest1e3c - dirPath: [" + dirPath
+                    log.debug("uploadPostTest1e3d - dirPath: [" + dirPath
                             + "], filenamePrefix: [" + namePrefix
                             + "]");
-                    uploadResp.uploadedFileList.forEach(fileDto ->
-                            log.debug("uploadPostTest1e3c - fileDto.getFilename: [" + fileDto.getFilename()
+                    uploadResp.getUploadedFiles().forEach(fileDto ->
+                            log.debug("uploadPostTest1e3d - fileDto.getFilename: [" + fileDto.getFilename()
                                     + "], fileDto.getContentLen: [" + fileDto.getContentLen()
                                     + "]"));
                 })
@@ -321,30 +321,65 @@ public class UploadController {
                 ;
     }
 
+    // this one is failed
+    @PostMapping(value = "upload-files-test-1e-3e"
+            , consumes = MediaType.MULTIPART_FORM_DATA_VALUE
+            , produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public Mono<UploadResp> uploadPostTest1e3e(@RequestPart(name = "files") Flux<FilePart> filePartFlux, ServerWebExchange exchange) {
+        String dirPath = "/Users/karl.hk.yeung/Documents/gt/project/Nanfung/upload-working/";
+        String namePrefix = "flux-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss")) + "-";
 
-    @Getter
-    @Setter
-    @NoArgsConstructor
-    public class FileInfo {
-        private String filename;
-        private byte[] content;
+        //Mono<FileInfo> fileInfoMono =
+        return this.uploadPostTest1e3eSub(dirPath, namePrefix, filePartFlux)
+                .onErrorResume(e -> {
+                    UploadResp uploadResp = UploadResp.builder().exceptionMsg(NestedExceptionUtils.buildMessage(e.getMessage(), e)).build();
+                    return Mono.just(uploadResp);
+                })
+                .log()
+                ;
     }
 
-    @Getter
-    @Setter
-    @AllArgsConstructor
-    public class FileDto {
-        private String filename;
-        private int contentLen;
-        private String uuid;
-    }
-
-
-    @Getter
-    @Setter
-    @AllArgsConstructor
-    public class UploadResp {
-        private List<FileDto> uploadedFileList;
+    private Mono<UploadResp> uploadPostTest1e3eSub(String dirPath, String namePrefix, Flux<FilePart> filePartFlux) {
+        return filePartFlux
+                // from Flux<FilePart> to Flux<FileInfo>
+                .log()
+                .map(filePart -> {
+                    FileFlux fileFlux = new FileFlux();
+                    fileFlux.setFilename(filePart.filename());
+                    fileFlux.setDataBufferFlux(filePart.content());
+                    return fileFlux;
+                })
+                .map(fileFlux -> {
+                    String filename = fileFlux.getFilename();
+                    FileInfo fileInfo = new FileInfo();
+                    fileInfo.setFilename(namePrefix + filename);
+                    Mono<DataBuffer> dataBufferMono = DataBufferUtils.join(fileFlux.getDataBufferFlux());
+                    dataBufferMono.doOnNext(dataBuffer -> fileInfo.setContent(dataBuffer.asByteBuffer().array()));
+                    return fileInfo;
+                })
+                .log(log.getName(), Level.FINER)
+                .map(fileInfo -> {
+                    String uuid = awsS3Service.putObject(fileInfo.getFilename(), fileInfo.getContent());
+                    FileDto fileDto = new FileDto(fileInfo.getFilename(), fileInfo.getContent().length, uuid);
+                    return fileDto;
+                })
+                // from Flux to Mono
+                .collectList()
+                // from Mono<List<FileInfo>> to Mono<UploadResp)
+                .map(fileDtos -> UploadResp.builder().uploadedFiles(fileDtos).build())
+                .log()
+                .doOnNext(uploadResp -> {
+                    log.debug("uploadPostTest1e3eSub - dirPath: [" + dirPath
+                            + "], filenamePrefix: [" + namePrefix
+                            + "]");
+                    uploadResp.getUploadedFiles().forEach(fileDto ->
+                            log.debug("uploadPostTest1e3eSub - fileDto.getFilename: [" + fileDto.getFilename()
+                                    + "], fileDto.getContentLen: [" + fileDto.getContentLen()
+                                    + "]"));
+                })
+                .log()
+                ;
     }
 
 

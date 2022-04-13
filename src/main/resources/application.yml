@@ -4,3 +4,9 @@ logging:
   level:
     org.springframework: DEBUG
     com.siukatech.webfluxdemo: DEBUG
+
+spring:
+  r2dbc:
+    url: r2dbc:mysql://127.0.0.1:13306/siukatech_client
+    username: siukatech_client
+    password: abcabc
